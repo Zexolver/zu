@@ -38,8 +38,8 @@ struct Group<'a> {
 
 impl App {
     pub fn new(cli: &Opts, mut cfg: Config, platform: Platform, dir: PathBuf) -> Result<Self> {
-        let sources = Sources::load(&dir)?;
-        let rules = Rules::load(&dir)?;
+        let sources = Sources::load(&dir, platform.os)?;
+        let rules = Rules::load(&dir, platform.os)?;
         if cli.user {
             cfg.general.mode = Mode::User;
         }
@@ -337,9 +337,16 @@ impl App {
     }
 
     pub fn doctor(&self) {
+        let sysdir = config::system_dir(self.platform.os);
         let file = |name: &str| {
-            let p = self.dir.join(name);
-            format!("{} ({})", p.display(), if p.exists() { "found" } else { "not found, defaults in use" })
+            let user = self.dir.join(name);
+            if user.exists() {
+                return format!("{} (found)", user.display());
+            }
+            match sysdir.as_ref().map(|d| d.join(name)).filter(|p| p.exists()) {
+                Some(sys) => format!("{} (none; using {})", user.display(), sys.display()),
+                None => format!("{} (not found, built-in defaults in use)", user.display()),
+            }
         };
         println!("zu {}", env!("CARGO_PKG_VERSION"));
         println!("platform   {} [{}]", self.platform.pretty, self.platform.os.name());
@@ -403,11 +410,15 @@ impl App {
     }
 }
 
-pub fn config_path(dir: &Path) {
+pub fn config_path(platform: &Platform, dir: &Path) {
     println!("{}", dir.display());
     println!("{}", dir.join(CONFIG_FILE).display());
     println!("{}", dir.join(SOURCES_FILE).display());
     println!("{}", dir.join(RULES_FILE).display());
+    if let Some(sys) = config::system_dir(platform.os) {
+        println!("\nsystem-wide defaults (used where the files above don't exist):");
+        println!("{}", sys.display());
+    }
 }
 
 /// Write starter files. Existing files are left alone unless `force`.

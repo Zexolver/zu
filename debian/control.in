@@ -1,0 +1,16 @@
+Package: zu
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Zexolver <Zexolver@disroot.org>
+Installed-Size: @SIZE@
+Section: admin
+Priority: optional
+Homepage: https://github.com/Zexolver/zu
+Description: Zex's Universal: one front-end for every package manager
+ zu is a pure-Rust wrapper that tries the platform's own package manager
+ first (apt here), then falls back through others in a configurable
+ order. Priority and per-package overrides live in /etc/zu, editable
+ per-user under ~/.config/zu.
+ .
+ This package ships a statically linked (musl) binary, so it has no
+ runtime library dependencies.

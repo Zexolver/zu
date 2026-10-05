@@ -100,14 +100,15 @@ pub struct BackendOptions {
 }
 
 impl Config {
-    pub fn load(dir: &Path) -> Result<Self> {
-        read_toml(&dir.join(CONFIG_FILE))
+    /// `dir` (user config) wins; falling back to the system-wide defaults in [`system_dir`].
+    pub fn load(dir: &Path, os: Os) -> Result<Self> {
+        read_toml(&dir.join(CONFIG_FILE), system_dir(os).as_deref().map(|d| d.join(CONFIG_FILE)))
     }
 }
 
 impl Sources {
-    pub fn load(dir: &Path) -> Result<Self> {
-        read_toml(&dir.join(SOURCES_FILE))
+    pub fn load(dir: &Path, os: Os) -> Result<Self> {
+        read_toml(&dir.join(SOURCES_FILE), system_dir(os).as_deref().map(|d| d.join(SOURCES_FILE)))
     }
 
     pub fn install_args(&self, id: &str) -> &[String] {
@@ -134,8 +135,8 @@ pub struct PkgRule {
 }
 
 impl Rules {
-    pub fn load(dir: &Path) -> Result<Self> {
-        read_toml(&dir.join(RULES_FILE))
+    pub fn load(dir: &Path, os: Os) -> Result<Self> {
+        read_toml(&dir.join(RULES_FILE), system_dir(os).as_deref().map(|d| d.join(RULES_FILE)))
     }
 
     pub fn get(&self, pkg: &str) -> Option<&PkgRule> {
@@ -161,11 +162,35 @@ impl PkgRule {
     }
 }
 
-fn read_toml<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
+/// `user` wins if present; otherwise `system` (a package-provided default) is tried; otherwise
+/// `T::default()`.
+fn read_toml<T: DeserializeOwned + Default>(user: &Path, system: Option<PathBuf>) -> Result<T> {
+    if let Some(v) = read_toml_at(user)? {
+        return Ok(v);
+    }
+    if let Some(sys) = system
+        && let Some(v) = read_toml_at(&sys)?
+    {
+        return Ok(v);
+    }
+    Ok(T::default())
+}
+
+fn read_toml_at<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     match fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text).with_context(|| format!("parsing {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Ok(text) => toml::from_str(&text).map(Some).with_context(|| format!("parsing {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Package-provided defaults, overridable per-user. `None` where there is no such convention
+/// (Termux has no writable system-wide location worth using for this).
+pub fn system_dir(os: Os) -> Option<PathBuf> {
+    match os {
+        Os::Windows => env::var_os("ProgramData").map(|p| PathBuf::from(p).join("zu")),
+        Os::Android => None,
+        _ => Some(PathBuf::from("/etc/zu")),
     }
 }
 
@@ -187,6 +212,7 @@ pub fn dir(os: Os, over: Option<&Path>) -> PathBuf {
 }
 
 pub const CONFIG_TEMPLATE: &str = r#"# zu settings. Which package managers to use lives in sources.toml.
+# This file overrides /etc/zu/config.toml (ProgramData\zu on Windows), if a package put one there.
 
 [general]
 # "auto": use the privileges you have, escalating for backends that need root.
@@ -304,5 +330,26 @@ mod tests {
         let cfg: Config = toml::from_str("[cli]\nstyle = \"pacman\"\n").unwrap();
         assert_eq!(cfg.cli.style, Style::Pacman);
         assert!(toml::from_str::<Config>("[cli]\nstyle = \"yum\"\n").is_err());
+    }
+
+    #[test]
+    fn system_dir_is_a_fallback_a_user_file_overrides() {
+        let tmp = std::env::temp_dir().join(format!("zu-cfg-test-{}", std::process::id()));
+        let user = tmp.join("user");
+        let system = tmp.join("system");
+        fs::create_dir_all(&user).unwrap();
+        fs::create_dir_all(&system).unwrap();
+        fs::write(system.join(SOURCES_FILE), "order = [\"apt\", \"pacstall\", \"flatpak\"]\n").unwrap();
+
+        // No user file: falls back to the system one.
+        let v: Sources = read_toml(&user.join(SOURCES_FILE), Some(system.join(SOURCES_FILE))).unwrap();
+        assert_eq!(v.order, ["apt", "pacstall", "flatpak"]);
+
+        // A user file wins outright, even an empty one.
+        fs::write(user.join(SOURCES_FILE), "order = [\"flatpak\"]\n").unwrap();
+        let v: Sources = read_toml(&user.join(SOURCES_FILE), Some(system.join(SOURCES_FILE))).unwrap();
+        assert_eq!(v.order, ["flatpak"]);
+
+        fs::remove_dir_all(&tmp).unwrap();
     }
 }

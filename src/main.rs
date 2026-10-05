@@ -29,7 +29,7 @@ fn run() -> Result<bool> {
 
     // The command-line dialect lives in config.toml, so the config dir is needed before clap runs.
     let dir = config::dir(platform.os, config_dir_hint().as_deref());
-    let cfg = Config::load(&dir);
+    let cfg = Config::load(&dir, platform.os);
     // A broken config must not stop `zu config init --force` from fixing it, so fall back to the
     // default dialect here; the error is reported below for every command that needs the config.
     let style = Style::from_env().or_else(|| cfg.as_ref().ok().map(|c| c.cli.style)).unwrap_or_default();
@@ -39,7 +39,7 @@ fn run() -> Result<bool> {
 
     if let [Action::Config(action)] = &parsed.actions[..] {
         match action {
-            ConfigCmd::Path => app::config_path(&dir),
+            ConfigCmd::Path => app::config_path(&platform, &dir),
             ConfigCmd::Init { force } => app::config_init(&platform, &dir, *force)?,
         }
         return Ok(true);

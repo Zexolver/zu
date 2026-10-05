@@ -37,6 +37,25 @@ Pacman style follows pacman's flag meanings, so `-y` is refresh and `-n` is nosa
 `--noconfirm` for non-interactive and `-p`/`--print` for a dry run; `-b`, `--skip`, `--user`,
 `--no-fallback` and `--config-dir` are unchanged.
 
+## Installing
+
+Pre-built `.deb` packages (amd64, arm64) are attached to each
+[GitHub release](https://github.com/Zexolver/zu/releases). They are statically linked (musl), so
+they have no runtime library dependencies and work on any Debian/Ubuntu-family release:
+
+```
+sudo apt install ./zu_0.1.0_amd64.deb   # or arm64
+```
+
+The package also drops a system-wide default at `/etc/zu/sources.toml`: try apt, then pacstall,
+then flatpak, then give up (snap/nix/brew are disabled there on purpose, so the chain stays short
+out of the box). It's a conffile, so `dpkg`/`apt` leave your edits alone across upgrades. A
+per-user `~/.config/zu/sources.toml` (`zu config init`) always overrides it — see
+[Config](#config) below.
+
+Otherwise, `cargo install --path .` from a clone, or build manually (see `scripts/build-deb.sh`
+for the exact cross-compilation steps for both architectures).
+
 ## Backends
 
 | Platform | Backends (default order) |
@@ -63,6 +82,11 @@ Only backends that apply to the platform *and* are on `PATH` are ever used or wr
 
 Directory: `--config-dir` / `$ZU_CONFIG_DIR`, else `$XDG_CONFIG_HOME/zu` or `~/.config/zu`
 (`%APPDATA%\zu` on Windows). All files are optional; `zu config init` writes starters.
+
+A packaged install (like the `.deb`) may also drop defaults in `/etc/zu` (`%ProgramData%\zu` on
+Windows; nothing on Termux). Those are used only for files missing from your own directory above —
+any file you have there wins outright, with no merging. `zu config path` and `zu doctor` show which
+directory ended up providing each file.
 
 `config.toml` — settings:
 

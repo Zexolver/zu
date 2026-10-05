@@ -1,0 +1,10 @@
+# zu system-wide defaults for Debian/Ubuntu, installed by the .deb package.
+# Copy this file to ~/.config/zu/sources.toml (or run `zu config init`) to make your own edits;
+# a per-user file always overrides this one.
+
+# Try apt first, then pacstall, then flatpak. Nothing else.
+order = ["apt", "pacstall", "flatpak"]
+
+# snap/nix/brew are disabled so that a failed install gives up after flatpak instead of trying
+# them. Drop any of these from the list (or remove this file) to let them back in.
+disabled = ["snap", "nix", "brew"]
