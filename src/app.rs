@@ -3,15 +3,18 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::{
     backends::{self, Op, Probe},
     cli::Opts,
     config::{
         self, CONFIG_FILE, CONFIG_TEMPLATE, Config, Escalate, Mode, RULES_FILE, RULES_TEMPLATE, Rules, SOURCES_FILE, Sources,
+        UiStyle,
     },
     plan::{self, Ctx, Detected},
     platform::{self, Platform, which},
@@ -128,6 +131,31 @@ impl App {
 
     fn names(&self, pkgs: &[&str], id: &str) -> Vec<String> {
         pkgs.iter().map(|p| self.rules.name(p, id).to_string()).collect()
+    }
+
+    /// Like `run`, but captures output instead of showing it (for the `[ui] style = "pretty"`
+    /// spinner); the captured text is only meant to be shown on failure.
+    fn run_captured(&self, d: &Detected, op: Op) -> (bool, String) {
+        let extra = self.sources.install_args(d.backend.id);
+        let argv = match self.ctx.argv(d, op, &[], extra) {
+            Ok(argv) => argv,
+            Err(why) => return (false, why),
+        };
+        match Command::new(&argv[0]).args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped()).output() {
+            Ok(out) => {
+                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+                text.push_str(&String::from_utf8_lossy(&out.stderr));
+                (out.status.success(), text)
+            }
+            Err(e) => (false, format!("cannot run {}: {e}", argv[0])),
+        }
+    }
+
+    /// Packages `p` reports as pending an upgrade, for `update`'s per-backend count/summary.
+    fn list_pending(&self, d: &Detected, p: &backends::Pending) -> Option<Vec<String>> {
+        let argv = plan::expand(p.cmd, d, false, false);
+        let out = Command::new(&argv[0]).args(&argv[1..]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        out.status.success().then(|| p.format.parse(&String::from_utf8_lossy(&out.stdout)))
     }
 
     /// `Some(true)` installed, `Some(false)` not, `None` unknown (no probe, or its tool is missing).
@@ -268,12 +296,86 @@ impl App {
     }
 
     pub fn update(&self) -> bool {
-        let mut ok = true;
-        for d in self.usable(Op::Refresh) {
-            eprintln!(":: refreshing {}", d.backend.id);
-            ok &= self.run(d, Op::Refresh, &[]);
+        // Unlike `usable()`, this keeps backends with no `refresh` command: they get a one-line
+        // explanation instead of silently vanishing (that looked like only the first backend was
+        // ever being updated).
+        let candidates: Vec<&Detected> = self
+            .backends
+            .iter()
+            .filter(|d| match self.ctx.access(d.backend, Op::Refresh) {
+                Ok(_) => true,
+                Err(why) => {
+                    eprintln!(":: skipping {}: {why}", d.backend.id);
+                    false
+                }
+            })
+            .collect();
+        if candidates.is_empty() {
+            eprintln!("no usable backend to update");
+            return true;
         }
-        ok
+
+        let pretty = self.cfg.ui.style == UiStyle::Pretty && !self.dry_run;
+        let total = candidates.len();
+        let mp = pretty.then(MultiProgress::new);
+        let overall = mp.as_ref().map(|mp| {
+            let pb = mp.add(ProgressBar::new(total as u64));
+            pb.set_style(ProgressStyle::with_template("{bar:28.cyan/blue} {pos}/{len}").unwrap());
+            pb
+        });
+
+        let mut all_ok = true;
+        let mut upgradable: Vec<(&str, String)> = Vec::new();
+        for (i, d) in candidates.iter().enumerate() {
+            let b = d.backend;
+            let success = if b.refresh.is_none() {
+                println!(":: {}: {}", b.id, b.refresh_note);
+                true
+            } else if let Some(mp) = &mp {
+                let spinner = mp.add(ProgressBar::new_spinner());
+                spinner.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap());
+                spinner.set_message(format!("Updating {}...", b.name));
+                spinner.enable_steady_tick(Duration::from_millis(80));
+                let (success, captured) = self.run_captured(d, Op::Refresh);
+                spinner.finish_and_clear();
+                if success {
+                    println!(":: {} updated", b.name);
+                } else {
+                    eprintln!(":: {} failed:\n{}", b.id, captured.trim_end());
+                }
+                success
+            } else {
+                eprintln!(":: updating {}", b.name);
+                self.run(d, Op::Refresh, &[])
+            };
+
+            if success
+                && let Some(p) = &b.pending
+                && let Some(names) = self.list_pending(d, p)
+            {
+                println!("   {} package(s) can be updated", names.len());
+                upgradable.extend(names.into_iter().map(|n| (b.id, n)));
+            }
+            match &overall {
+                Some(pb) => pb.inc(1),
+                None => eprintln!(":: [{}/{total}] {} done", i + 1, b.id),
+            }
+            all_ok &= success;
+        }
+        // Not `ProgressBar::finish_with_message`: indicatif hides its own output entirely when
+        // stderr isn't a terminal (piped/logged), which would otherwise drop "Done!" with it.
+        if let Some(pb) = overall {
+            pb.finish_and_clear();
+        }
+        println!("Done!");
+
+        if self.cfg.ui.list_upgradable && !upgradable.is_empty() {
+            println!("\n{} package(s) can be upgraded:", upgradable.len());
+            for (id, name) in &upgradable {
+                println!("  {name}  ({id})");
+            }
+        }
+        all_ok
     }
 
     pub fn upgrade(&self) -> bool {

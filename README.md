@@ -70,6 +70,26 @@ for the exact cross-compilation steps for both architectures).
 
 Only backends that apply to the platform *and* are on `PATH` are ever used or written to the config.
 
+### `zu update`
+
+`update` refreshes every configured backend, not just the first one: each backend with its own
+refresh step gets one, and a backend without one (pacman, pacstall, paru/yay, snap, choco, nix,
+pkg_add, ...) prints a one-line reason instead of silently doing nothing — those are combined
+refresh+upgrade (or have no index at all), so there's nothing separate to run; `zu upgrade` covers
+them. Backends that refuse to run as root (pacstall, paru/yay, brew, scoop) are skipped under
+`sudo zu update` the same as everywhere else — run it as yourself instead and zu escalates only the
+backends that need it.
+
+`[ui] style` in `config.toml` picks how this (and nothing else, for now) is shown:
+* `"pretty"` (default): a spinner per backend plus an overall progress bar, each backend's own
+  output captured rather than printed (shown on failure), ending in `Done!` and, if
+  `list_upgradable = true` (default), every package every backend found pending an upgrade.
+* `"raw"`: each backend's own output verbatim, same as `install`/`upgrade`/etc., with a plain
+  `[i/n] done` line after each one instead of the progress bar.
+
+Only `apt` currently knows how to list what it would upgrade (`apt list --upgradable`); other
+backends still get refreshed and counted toward the `i/n` progress, just without a package count.
+
 ## Privileges
 
 * Root: everything runs directly; flatpak installs system-wide.
@@ -99,6 +119,10 @@ assume_yes = false
 
 [cli]
 style = "apt"       # or "pacman"
+
+[ui]
+style = "pretty"         # or "raw"; see "zu update" above
+list_upgradable = true
 ```
 
 `sources.toml` — which package managers, in what order:
@@ -125,5 +149,7 @@ pacstall = "hyprland-git"
 
 ## Status
 
-Only the Arch/pacman/paru/flatpak/nix paths have been exercised on real hardware. Command
-templates for the other backends are in `src/backends.rs` and are unit-tested for shape, not run.
+Only the Arch/pacman/paru/flatpak/nix paths, the `.deb` packaging, and `zu update`'s apt/pacstall
+path (simulated: apt and pacstall aren't installable on the dev machine) have been exercised on
+real or emulated hardware. Command templates for the other backends are in `src/backends.rs` and
+are unit-tested for shape, not run.

@@ -67,6 +67,37 @@ pub enum Probe {
 
 pub type Cmd = Option<&'static [&'static str]>;
 
+/// A command that lists packages pending an upgrade, for `zu update`'s per-backend count/summary.
+#[derive(Clone, Copy)]
+pub struct Pending {
+    pub cmd: &'static [&'static str],
+    pub format: ListFormat,
+}
+
+#[derive(Clone, Copy)]
+pub enum ListFormat {
+    /// Already one package name per line (or name first on the line). Not used by any backend
+    /// yet; ready for the next one that needs it.
+    #[allow(dead_code)]
+    Name,
+    /// `name/suite version arch [upgradable from: ...]`, e.g. `apt list --upgradable`.
+    AptSlash,
+}
+
+impl ListFormat {
+    /// Package names out of `text`; lines that don't fit the format are dropped rather than
+    /// guessed at.
+    pub fn parse(self, text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter_map(|first| match self {
+                ListFormat::Name => Some(first.to_string()),
+                ListFormat::AptSlash => first.contains('/').then(|| first.split('/').next().unwrap().to_string()),
+            })
+            .collect()
+    }
+}
+
 pub struct Backend {
     pub id: &'static str,
     pub name: &'static str,
@@ -97,6 +128,11 @@ pub struct Backend {
     pub upgrade: Cmd,
     pub list: Cmd,
     pub probe: Option<Probe>,
+    /// Why `zu update` can't give this backend a separate refresh step, shown in place of one.
+    /// Required (checked by a test) whenever `refresh` is `None`.
+    pub refresh_note: &'static str,
+    /// Lists packages pending an upgrade, for `zu update`'s per-backend count/summary.
+    pub pending: Option<Pending>,
     /// Where to get it, shown by `doctor` when it is applicable but missing.
     pub hint: &'static str,
 }
@@ -140,6 +176,8 @@ const BASE: Backend = Backend {
     upgrade: None,
     list: None,
     probe: None,
+    refresh_note: "",
+    pending: None,
     hint: "",
 };
 
@@ -185,6 +223,7 @@ pub static ALL: &[Backend] = &[
         upgrade: Some(&["apt-get", "upgrade", "{yes}"]),
         list: Some(&["dpkg-query", "-W"]),
         probe: Some(DPKG_INSTALLED),
+        pending: Some(Pending { cmd: &["apt", "list", "--upgradable"], format: ListFormat::AptSlash }),
         ..BASE
     },
     Backend {
@@ -228,7 +267,7 @@ pub static ALL: &[Backend] = &[
         os: &[Os::Linux],
         distros: &["arch"],
         yes: &["--noconfirm"],
-        // No standalone refresh: `pacman -Sy` without `-u` risks partial upgrades.
+        refresh_note: "running -Sy alone risks a partial upgrade; 'zu upgrade' (-Syu) checks and applies together",
         install: Some(&["pacman", "-S", "--needed", "{yes}"]),
         remove: Some(&["pacman", "-Rs", "{yes}"]),
         purge: Some(&["pacman", "-Rns", "{yes}"]),
@@ -318,6 +357,7 @@ pub static ALL: &[Backend] = &[
         privilege: Priv::User,
         refuses_root: true,
         yes: &["-P"],
+        refresh_note: "doesn't keep a separate package index; 'zu upgrade' checks each package's source as it upgrades",
         install: Some(&["pacstall", "{yes}", "-I"]),
         remove: Some(&["pacstall", "{yes}", "-R"]),
         search: Some(&["pacstall", "-S"]),
@@ -339,6 +379,7 @@ pub static ALL: &[Backend] = &[
         refuses_root: true,
         yes: &["--noconfirm"],
         group: "aur",
+        refresh_note: "shares pacman's sync database; 'zu upgrade' (-Sua) checks and applies together",
         install: Some(&["paru", "-S", "--needed", "{yes}"]),
         remove: Some(&["paru", "-Rs", "{yes}"]),
         purge: Some(&["paru", "-Rns", "{yes}"]),
@@ -361,6 +402,7 @@ pub static ALL: &[Backend] = &[
         refuses_root: true,
         yes: &["--noconfirm"],
         group: "aur",
+        refresh_note: "shares pacman's sync database; 'zu upgrade' (-Sua) checks and applies together",
         install: Some(&["yay", "-S", "--needed", "{yes}"]),
         remove: Some(&["yay", "-Rs", "{yes}"]),
         purge: Some(&["yay", "-Rns", "{yes}"]),
@@ -400,6 +442,7 @@ pub static ALL: &[Backend] = &[
         bin: "snap",
         kind: Kind::Universal,
         os: &[Os::Linux],
+        refresh_note: "'snap refresh' checks and updates in one step; there's no separate check",
         install: Some(&["snap", "install"]),
         remove: Some(&["snap", "remove"]),
         purge: Some(&["snap", "remove", "--purge"]),
@@ -419,6 +462,7 @@ pub static ALL: &[Backend] = &[
         os: &[Os::Linux, Os::Darwin],
         privilege: Priv::User,
         install_prefix: "nixpkgs#",
+        refresh_note: "profiles pin the nixpkgs revision at install time; 'zu upgrade' re-resolves it",
         install: Some(&["nix", "--extra-experimental-features", "nix-command flakes", "profile", "install"]),
         remove: Some(&["nix", "--extra-experimental-features", "nix-command flakes", "profile", "remove"]),
         search: Some(&["nix", "--extra-experimental-features", "nix-command flakes", "search", "nixpkgs"]),
@@ -500,6 +544,7 @@ pub static ALL: &[Backend] = &[
         bin: "choco",
         os: &[Os::Windows],
         yes: &["-y"],
+        refresh_note: "checks its remotes while upgrading; there's no separate check",
         install: Some(&["choco", "install", "{yes}"]),
         remove: Some(&["choco", "uninstall", "{yes}"]),
         search: Some(&["choco", "search"]),
@@ -536,6 +581,7 @@ pub static ALL: &[Backend] = &[
         os: &[Os::Android],
         privilege: Priv::User,
         yes: &["-y"],
+        refresh_note: "shares pkg's package index; refreshed together with pkg",
         install: Some(&["apt", "install", "{yes}"]),
         remove: Some(&["apt", "remove", "{yes}"]),
         purge: Some(&["apt", "purge", "{yes}"]),
@@ -552,6 +598,7 @@ pub static ALL: &[Backend] = &[
         os: &[Os::Android],
         privilege: Priv::User,
         local_ext: Some("deb"),
+        refresh_note: "installs local .deb files only; there's no index to refresh",
         install: Some(&["dpkg", "-i"]),
         remove: Some(&["dpkg", "-r"]),
         purge: Some(&["dpkg", "-P"]),
@@ -599,6 +646,7 @@ pub static ALL: &[Backend] = &[
         name: "pkg_add",
         bin: "pkg_add",
         os: &[Os::OpenBsd],
+        refresh_note: "has no package index to refresh",
         install: Some(&["pkg_add"]),
         remove: Some(&["pkg_delete"]),
         search: Some(&["pkg_info", "-Q"]),
@@ -652,7 +700,20 @@ mod tests {
                 }
             }
             assert!(b.install.is_some() && b.remove.is_some(), "{} can't install/remove", b.id);
+            assert!(
+                b.refresh.is_some() || !b.refresh_note.is_empty(),
+                "{} has no refresh and no refresh_note explaining why",
+                b.id
+            );
         }
+    }
+
+    #[test]
+    fn list_format_parsing() {
+        let apt = "Listing... Done\nvim/stable 2:9.1.0-1 amd64 [upgradable from: 2:9.0.0-1]\nhtop/stable 3.3.0-1 amd64 [upgradable from: 3.2.0-1]\n";
+        assert_eq!(ListFormat::AptSlash.parse(apt), ["vim", "htop"]);
+        assert_eq!(ListFormat::Name.parse("vim\nhtop 3.3.0\n"), ["vim", "htop"]);
+        assert_eq!(ListFormat::AptSlash.parse(""), Vec::<String>::new());
     }
 
     #[test]

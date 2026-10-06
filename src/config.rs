@@ -19,6 +19,33 @@ pub const RULES_FILE: &str = "packages.toml";
 pub struct Config {
     pub general: General,
     pub cli: CliConfig,
+    pub ui: UiConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiConfig {
+    pub style: UiStyle,
+    /// After `zu update`, list every package each backend reports as pending an upgrade.
+    pub list_upgradable: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        UiConfig { style: UiStyle::Pretty, list_upgradable: true }
+    }
+}
+
+/// How `zu update`/`zu upgrade` show backend activity.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiStyle {
+    /// zu's own spinner, progress bar and per-backend summary; each backend's own output is
+    /// captured rather than shown.
+    #[default]
+    Pretty,
+    /// Each backend's own output, verbatim, same as `install`/`remove`.
+    Raw,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -232,6 +259,14 @@ assume_yes = false
 #   "apt"    zu install / remove / purge / search / show / update / upgrade / list
 #   "pacman" zu -S / -R / -Rns / -Ss / -Si / -Sy / -Syu / -Q
 style = "apt"
+
+[ui]
+# How `zu update`/`zu upgrade` show backend activity:
+#   "pretty" zu's own spinner, progress bar and per-backend summary (default)
+#   "raw"    each backend's own output, verbatim, same as install/remove
+style = "pretty"
+# After `zu update`, list every package each backend reports as pending an upgrade.
+list_upgradable = true
 "#;
 
 /// Starter sources listing only the backends that apply here and are installed.
@@ -321,7 +356,18 @@ mod tests {
         let cfg: Config = toml::from_str(CONFIG_TEMPLATE).unwrap();
         assert!(cfg.general.fallback);
         assert_eq!(cfg.cli.style, Style::Apt);
+        assert_eq!(cfg.ui.style, UiStyle::Pretty);
+        assert!(cfg.ui.list_upgradable);
         toml::from_str::<Rules>(RULES_TEMPLATE).unwrap();
+    }
+
+    #[test]
+    fn ui_style_defaults_and_parses() {
+        assert_eq!(Config::default().ui.style, UiStyle::Pretty);
+        assert!(Config::default().ui.list_upgradable);
+        let cfg: Config = toml::from_str("[ui]\nstyle = \"raw\"\nlist_upgradable = false\n").unwrap();
+        assert_eq!(cfg.ui.style, UiStyle::Raw);
+        assert!(!cfg.ui.list_upgradable);
     }
 
     #[test]
